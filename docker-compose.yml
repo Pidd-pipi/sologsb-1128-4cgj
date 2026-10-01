@@ -1,0 +1,15 @@
+name: gbfishport
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_AMAP_KEY: ${VITE_AMAP_KEY:-}
+    image: ${COMPOSE_PROJECT_NAME:-gbfishport}-frontend:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-gbfishport}-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-21828}:80"
+    environment:
+      - TZ=Asia/Shanghai

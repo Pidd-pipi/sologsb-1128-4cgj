@@ -1,0 +1,21 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #f5f8fb;
+  color: #17324d;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.el-card {
+  --el-card-border-color: #e7eef5;
+}
