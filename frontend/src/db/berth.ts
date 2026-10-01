@@ -57,6 +57,7 @@ export function buildBerthRecords(
       leaveAt: null,
       status: hit ? hit.status : '空闲',
       designDepth: port.berthDepth,
+      version: 1,
     });
   }
   return records;

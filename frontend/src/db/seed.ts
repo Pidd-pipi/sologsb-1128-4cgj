@@ -167,8 +167,8 @@ export const SEED_VESSELS: FishingVessel[] = [
   },
 ];
 
-/** 初始进出港流水 */
-export const SEED_CALLS: PortCall[] = [
+/** 初始进出港流水（统一补乐观锁版本号 1） */
+export const SEED_CALLS = [
   {
     id: 'c-3001',
     vesselId: 'v-2001',
@@ -273,7 +273,7 @@ export const SEED_CALLS: PortCall[] = [
     visaStatus: '待签证',
     createdAt: daysAgo(4),
   },
-];
+].map((c) => ({ ...c, version: 1 })) as PortCall[];
 
 /**
  * 首次进入时写入演示数据，并为缺少泊位记录的渔港补齐泊位。

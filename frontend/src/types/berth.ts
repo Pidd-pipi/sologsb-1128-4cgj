@@ -22,6 +22,8 @@ export interface Berth {
   status: BerthStatus;
   /** 泊位设计水深 m */
   designDepth: number;
+  /** 乐观锁版本号：多标签页并发写时比对，版本不一致则拒绝覆盖 */
+  version: number;
 }
 
 /** 泊位占用聚合结果（useBerthStatus 输出） */

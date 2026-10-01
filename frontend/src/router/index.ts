@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '进出港登记' },
   },
   {
+    path: '/ledger',
+    name: 'ledger-import',
+    component: () => import('../pages/LedgerImport.vue'),
+    meta: { title: '台账导入' },
+  },
+  {
     path: '/map',
     name: 'map-view',
     component: () => import('../pages/MapView.vue'),

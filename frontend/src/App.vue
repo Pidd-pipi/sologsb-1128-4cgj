@@ -1,20 +1,48 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Location, MapLocation, Tickets, Van } from '@element-plus/icons-vue';
+import { Location, MapLocation, Tickets, Van, Document } from '@element-plus/icons-vue';
 import { useUiStore } from './stores/uiStore';
+import { usePortStore } from './stores/portStore';
+import { useVesselStore } from './stores/vesselStore';
+import { useTodoStore } from './stores/todoStore';
+import { onDataChanged } from './utils/sync';
 
 const route = useRoute();
 const uiStore = useUiStore();
+const portStore = usePortStore();
+const vesselStore = useVesselStore();
+const todoStore = useTodoStore();
 
 const activePath = computed(() => {
   const path = route.path;
   if (path === '/' || path.startsWith('/ports')) return '/';
   if (path.startsWith('/vessels')) return '/vessels';
   if (path.startsWith('/calls')) return '/calls';
+  if (path.startsWith('/ledger')) return '/ledger';
   if (path.startsWith('/map')) return '/map';
   return path;
+});
+
+let reloadTimer: number | undefined;
+function scheduleReload(): void {
+  if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
+  reloadTimer = window.setTimeout(() => {
+    void Promise.all([portStore.loadAll(), vesselStore.loadAll(), todoStore.loadAll()]);
+  }, 120);
+}
+
+let unsubscribe: (() => void) | undefined;
+
+onMounted(() => {
+  void Promise.all([portStore.loadAll(), vesselStore.loadAll(), todoStore.loadAll()]);
+  unsubscribe = onDataChanged(scheduleReload);
+});
+
+onBeforeUnmount(() => {
+  unsubscribe?.();
+  if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
 });
 
 watch(
@@ -49,6 +77,16 @@ watch(
         <el-menu-item index="/calls">
           <el-icon><Tickets /></el-icon>
           进出港登记
+        </el-menu-item>
+        <el-menu-item index="/ledger">
+          <el-icon><Document /></el-icon>
+          台账导入
+          <el-badge
+            v-if="todoStore.openCount > 0"
+            :value="todoStore.openCount"
+            class="app__todo-badge"
+            type="danger"
+          />
         </el-menu-item>
         <el-menu-item index="/map">
           <el-icon><MapLocation /></el-icon>
@@ -106,6 +144,10 @@ watch(
 }
 .app__menu {
   border-bottom: none;
+}
+.app__todo-badge {
+  margin-left: 6px;
+  margin-top: -8px;
 }
 .app__main {
   padding: 20px 24px 8px;

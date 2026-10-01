@@ -30,6 +30,8 @@ export interface PortCall {
   /** 签证状态 */
   visaStatus: VisaStatus;
   createdAt: string;
+  /** 乐观锁版本号 */
+  version: number;
 }
 
 /** 进出港登记表单模型 */
