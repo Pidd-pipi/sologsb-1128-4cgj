@@ -6,6 +6,7 @@ import { usePortStore } from '../stores/portStore';
 import { useVesselStore } from '../stores/vesselStore';
 import { useLocalDraft } from '../hooks/useLocalDraft';
 import { useBerthStatus } from '../hooks/useBerthStatus';
+import { BerthConflictError } from '../services/berthService';
 import BerthGrid from '../components/common/BerthGrid.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
@@ -20,7 +21,7 @@ const router = useRouter();
 const portStore = usePortStore();
 const vesselStore = useVesselStore();
 
-const { draft, restored, savedAt, storageKey, persist, restore, clearDraft } = useLocalDraft<CallForm>('call-board', () => ({
+const { draft, restored, savedAt, storageKey, staleByOtherTab, persist, restore, clearDraft, adoptRemote } = useLocalDraft<CallForm>('call-board', () => ({
   ...emptyCallDraft(),
   portId: '',
   time: nowLocalInputValue(),
@@ -124,12 +125,35 @@ watch(
 );
 
 function selectBerth(berth: Berth): void {
+  if (staleByOtherTab.value) {
+    ElMessage.warning('本标签页的草稿已过期，请先采用其他标签页的最新补录或丢弃后再操作');
+    return;
+  }
   berthKey.value = `${berth.portId}|${berth.berthNo}`;
   ElMessage.info(`已选择 ${berth.berthNo}`);
 }
 
+/** 采用其他标签页写入的较新草稿 */
+function adoptOtherDraft(): void {
+  if (adoptRemote()) {
+    ElMessage.success('已载入其他标签页的最新补录');
+    if (form.value.portId) focusPortId.value = form.value.portId;
+  }
+}
+
+/** 丢弃远端草稿，以本页内容为准继续补录 */
+function keepLocalDraft(): void {
+  staleByOtherTab.value = false;
+  persist();
+  ElMessage.info('已保留本标签页内容为最新草稿');
+}
+
 async function submit(): Promise<void> {
   if (!formRef.value) return;
+  if (staleByOtherTab.value) {
+    ElMessage.error('本标签页的补录已被其他标签页的更新草稿盖过，请先选择「采用最新补录」或「以本页为准」');
+    return;
+  }
   const valid = await formRef.value.validate().catch(() => false);
   if (!valid) return;
   if (!selectedVessel.value) {
@@ -148,7 +172,7 @@ async function submit(): Promise<void> {
       unloadKg: Number(form.value.unloadKg) || 0,
       visaStatus: form.value.visaStatus,
     };
-    const call = await portStore.registerCall(payload, selectedVessel.value.name, form.value.portId);
+    const call = await portStore.registerCall(payload, selectedVessel.value.name, form.value.portId, selectedVessel.value.vesselNo);
     ElMessage.success(`已登记 ${call.vesselName} ${call.type} · 泊位 ${call.berthNo}`);
     clearDraft();
     Object.assign(form.value, {
@@ -158,7 +182,11 @@ async function submit(): Promise<void> {
     });
     focusPortId.value = '';
   } catch (error) {
-    ElMessage.error(`登记失败：${(error as Error).message}`);
+    // 乐观锁 / 占用冲突：刷新泊位快照后提示，避免旧标签页继续覆盖
+    await portStore.loadAll();
+    ElMessage.error(
+      error instanceof BerthConflictError ? error.message : `登记失败：${(error as Error).message}`,
+    );
   } finally {
     submitting.value = false;
   }
@@ -191,6 +219,21 @@ function openVessel(vesselId: string): void {
     >
       <template #default>
         草稿保存在 localStorage（键 {{ storageKey }}），提交成功后会清空。
+      </template>
+    </el-alert>
+
+    <el-alert
+      v-if="staleByOtherTab"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="检测到其他标签页更新了同一补录草稿，本页内容已过期，自动保存已暂停以防覆盖"
+      data-testid="draft-stale-alert"
+      class="draft-alert"
+    >
+      <template #default>
+        <el-button size="small" type="primary" data-testid="draft-adopt" @click="adoptOtherDraft">采用最新补录</el-button>
+        <el-button size="small" data-testid="draft-keep-local" @click="keepLocalDraft">以本页为准</el-button>
       </template>
     </el-alert>
 

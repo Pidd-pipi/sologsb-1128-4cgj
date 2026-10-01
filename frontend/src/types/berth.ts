@@ -22,6 +22,11 @@ export interface Berth {
   status: BerthStatus;
   /** 泊位设计水深 m */
   designDepth: number;
+  /**
+   * 乐观锁版本：每次占用/释放修改 +1。
+   * 多标签页同时改同一泊位时，条件更新（version 不符）会失败，拒绝互相覆盖。
+   */
+  version?: number;
 }
 
 /** 泊位占用聚合结果（useBerthStatus 输出） */

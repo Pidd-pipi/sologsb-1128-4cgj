@@ -32,6 +32,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '进出港登记' },
   },
   {
+    path: '/reconcile',
+    name: 'reconcile-board',
+    component: () => import('../pages/ReconcileBoard.vue'),
+    meta: { title: '台账对账' },
+  },
+  {
+    path: '/todos',
+    name: 'todo-board',
+    component: () => import('../pages/TodoBoard.vue'),
+    meta: { title: '待办事项' },
+  },
+  {
     path: '/map',
     name: 'map-view',
     component: () => import('../pages/MapView.vue'),

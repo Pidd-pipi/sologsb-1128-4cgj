@@ -6,6 +6,8 @@ import { emptyPortFilter, type FishingPort, type PortFilter, type SupplyCapabili
 import type { Berth, BerthStatus } from '../types/berth';
 import type { CallDraft, PortCall } from '../types/call';
 import { buildBerthRecords } from '../db/berth';
+import { BerthConflictError, changeBerthStatus } from '../services/berthService';
+import { syncBus } from '../services/syncBus';
 
 export interface PortInput {
   name: string;
@@ -50,6 +52,10 @@ export const usePortStore = defineStore('port', () => {
     return berths.value.filter((b) => b.portId === portId).sort((a, b) => a.berthNo.localeCompare(b.berthNo));
   }
 
+  function callsOfPort(portId: string): PortCall[] {
+    return callsSorted.value.filter((c) => c.portId === portId);
+  }
+
   function callsOfVessel(vesselId: string): PortCall[] {
     return callsSorted.value.filter((c) => c.vesselId === vesselId);
   }
@@ -91,6 +97,7 @@ export const usePortStore = defineStore('port', () => {
     await db.berths.bulkPut(toPlain(records));
     ports.value = [...ports.value, port];
     berths.value = [...berths.value, ...records];
+    syncBus.post('data-changed');
     return port;
   }
 
@@ -110,27 +117,21 @@ export const usePortStore = defineStore('port', () => {
       leaveAt: null,
       status: '空闲',
       designDepth: Number(designDepth) || port.berthDepth,
+      version: 0,
     };
     await db.berths.put(toPlain(berth));
     berths.value = [...berths.value, berth];
     const nextCount = berthsOf(portId).length;
     await updatePort(portId, { berthCount: nextCount });
+    syncBus.post('data-changed', { berthId: berth.id });
     return berth;
   }
 
-  async function setBerthStatus(berthId: string, status: BerthStatus): Promise<void> {
-    const hit = berths.value.find((b) => b.id === berthId);
-    if (!hit) return;
-    const next: Berth = {
-      ...hit,
-      status,
-      vesselId: status === '占用' ? hit.vesselId : null,
-      vesselName: status === '占用' ? hit.vesselName : null,
-      berthAt: status === '占用' ? hit.berthAt ?? new Date().toISOString() : hit.berthAt,
-      leaveAt: status === '空闲' ? new Date().toISOString() : null,
-    };
-    await db.berths.put(toPlain(next));
-    berths.value = berths.value.map((b) => (b.id === berthId ? next : b));
+  /** 详情页手工置为维修 / 释放空闲：版本乐观锁，防多标签页互相覆盖 */
+  async function setBerthStatus(berthId: string, status: BerthStatus): Promise<Berth> {
+    const saved = await changeBerthStatus(berthId, status);
+    berths.value = berths.value.map((b) => (b.id === berthId ? saved : b));
+    return saved;
   }
 
   async function updatePort(portId: string, patch: Partial<FishingPort>): Promise<void> {
@@ -143,46 +144,95 @@ export const usePortStore = defineStore('port', () => {
 
   /**
    * 登记一条进出港记录，并同步泊位占用状态（进港 → 占用，出港 → 释放）。
+   * 泊位校验 + 条件写入 + 流水写入在同一事务内完成：
+   * 目标泊位已被其他船占用 / 维修 / 被其他标签页改动时抛 BerthConflictError，整体回滚。
    */
-  async function registerCall(draft: CallDraft, vesselName: string, portId: string): Promise<PortCall> {
+  async function registerCall(
+    draft: CallDraft,
+    vesselName: string,
+    portId: string,
+    vesselNo = '',
+  ): Promise<PortCall> {
+    const time = draft.time ? new Date(draft.time).toISOString() : new Date().toISOString();
     const call: PortCall = {
       id: uid('c'),
       vesselId: draft.vesselId,
       vesselName,
+      vesselNo,
+      portId,
       type: draft.type,
-      time: draft.time ? new Date(draft.time).toISOString() : new Date().toISOString(),
+      time,
+      endTime: null,
       berthNo: draft.berthNo,
       iceKg: Number(draft.iceKg) || 0,
       fuelL: Number(draft.fuelL) || 0,
       unloadKg: Number(draft.unloadKg) || 0,
       visaStatus: draft.visaStatus,
+      source: '手工',
       createdAt: new Date().toISOString(),
     };
-    await db.calls.put(toPlain(call));
-    calls.value = [...calls.value, call];
 
-    const berth = berths.value.find((b) => b.portId === portId && b.berthNo === draft.berthNo);
-    if (berth) {
-      const next: Berth =
-        draft.type === '进港'
-          ? {
-              ...berth,
-              status: '占用',
-              vesselId: draft.vesselId,
-              vesselName,
-              berthAt: call.time,
-              leaveAt: null,
-            }
-          : {
-              ...berth,
-              status: '空闲',
-              vesselId: null,
-              vesselName: null,
-              berthAt: null,
-              leaveAt: call.time,
-            };
-      await db.berths.put(toPlain(next));
-      berths.value = berths.value.map((b) => (b.id === berth.id ? next : b));
+    const berthId = `${portId}-${draft.berthNo}`;
+    let savedBerth: Berth | null = null;
+
+    await db.transaction('rw', db.calls, db.berths, async () => {
+      const expected = await db.berths.get(berthId);
+      if (!expected) throw new BerthConflictError(berthId, `泊位 ${draft.berthNo} 不存在`);
+      const expectedVersion = expected.version ?? 0;
+
+      let next: Berth;
+      if (draft.type === '进港') {
+        if (expected.status === '维修') {
+          throw new BerthConflictError(berthId, `泊位 ${draft.berthNo} 正在维修，不能停靠`);
+        }
+        if (expected.status === '占用' && expected.vesselId && expected.vesselId !== draft.vesselId) {
+          throw new BerthConflictError(
+            berthId,
+            `泊位 ${draft.berthNo} 已被 ${expected.vesselName ?? '其他船舶'} 占用，无法重复停靠`,
+          );
+        }
+        next =
+          expected.status === '占用' && expected.vesselId === draft.vesselId
+            ? { ...expected, version: expectedVersion }
+            : {
+                ...expected,
+                status: '占用' as const,
+                vesselId: draft.vesselId,
+                vesselName,
+                berthAt: time,
+                leaveAt: null,
+                version: expectedVersion,
+              };
+      } else {
+        if (expected.status !== '占用' || !expected.vesselId) {
+          throw new BerthConflictError(berthId, `泊位 ${draft.berthNo} 当前不是占用状态，无需出港`);
+        }
+        if (expected.vesselId !== draft.vesselId) {
+          throw new BerthConflictError(
+            berthId,
+            `泊位 ${draft.berthNo} 由 ${expected.vesselName ?? '其他船舶'} 占用，不能登记其他船出港`,
+          );
+        }
+        next = {
+          ...expected,
+          status: '空闲' as const,
+          vesselId: null,
+          vesselName: null,
+          berthAt: null,
+          leaveAt: time,
+          version: expectedVersion,
+        };
+      }
+
+      savedBerth = { ...next, version: expectedVersion + 1 };
+      await db.berths.put(toPlain(savedBerth));
+      await db.calls.put(toPlain(call));
+    });
+
+    syncBus.post('data-changed', { berthId });
+    calls.value = [...calls.value, call];
+    if (savedBerth) {
+      berths.value = berths.value.map((b) => (b.id === savedBerth!.id ? savedBerth! : b));
     }
     return call;
   }
@@ -197,6 +247,7 @@ export const usePortStore = defineStore('port', () => {
     callsSorted,
     portById,
     berthsOf,
+    callsOfPort,
     callsOfVessel,
     resetFilter,
     loadAll,

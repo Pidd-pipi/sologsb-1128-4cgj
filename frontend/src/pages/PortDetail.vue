@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { usePortStore } from '../stores/portStore';
 import { useVesselStore } from '../stores/vesselStore';
+import { useTodoStore } from '../stores/todoStore';
 import { useBerthStatus } from '../hooks/useBerthStatus';
+import { BerthConflictError } from '../services/berthService';
 import PortCard from '../components/common/PortCard.vue';
 import BerthGrid from '../components/common/BerthGrid.vue';
 import MapPanel from '../components/common/MapPanel.vue';
@@ -17,6 +19,7 @@ const route = useRoute();
 const router = useRouter();
 const portStore = usePortStore();
 const vesselStore = useVesselStore();
+const todoStore = useTodoStore();
 
 const portId = computed(() => String(route.params.id ?? ''));
 const port = computed(() => portStore.portById(portId.value));
@@ -36,10 +39,10 @@ const activeVessel = computed(() =>
 const addBerthVisible = ref(false);
 const addBerthForm = reactive({ berthNo: '', designDepth: 4.5 });
 
-const recentCalls = computed(() => {
-  const numbers = new Set(portBerths.value.map((b) => b.berthNo));
-  return portStore.callsSorted.filter((c) => numbers.has(c.berthNo)).slice(0, 8);
-});
+const recentCalls = computed(() => portStore.callsOfPort(portId.value).slice(0, 8));
+
+/** 本港未关闭待办（容量不足 / 时段冲突等台账预检拒绝项） */
+const portTodos = computed(() => todoStore.todosOfPort(portId.value));
 
 const supply = computed(() => (port.value ? supplyText(port.value.supply) : '—'));
 
@@ -48,6 +51,7 @@ const loaded = ref(false);
 async function bootstrap(): Promise<void> {
   if (!portStore.ports.length) await portStore.loadAll();
   if (!vesselStore.vessels.length) await vesselStore.loadAll();
+  if (!todoStore.todos.length) await todoStore.loadAll();
   loaded.value = true;
 }
 
@@ -62,15 +66,25 @@ function openBerth(berth: Berth): void {
 async function markMaintenance(): Promise<void> {
   const berth = activeBerth.value;
   if (!berth) return;
-  await portStore.setBerthStatus(berth.id, '维修');
-  ElMessage.success(`${berth.berthNo} 已置为维修`);
+  try {
+    await portStore.setBerthStatus(berth.id, '维修');
+    ElMessage.success(`${berth.berthNo} 已置为维修`);
+  } catch (error) {
+    await portStore.loadAll();
+    ElMessage.error(error instanceof BerthConflictError ? error.message : `操作失败：${(error as Error).message}`);
+  }
 }
 
 async function releaseBerth(): Promise<void> {
   const berth = activeBerth.value;
   if (!berth) return;
-  await portStore.setBerthStatus(berth.id, '空闲');
-  ElMessage.success(`${berth.berthNo} 已释放为空闲`);
+  try {
+    await portStore.setBerthStatus(berth.id, '空闲');
+    ElMessage.success(`${berth.berthNo} 已释放为空闲`);
+  } catch (error) {
+    await portStore.loadAll();
+    ElMessage.error(error instanceof BerthConflictError ? error.message : `操作失败：${(error as Error).message}`);
+  }
 }
 
 async function submitBerth(): Promise<void> {
@@ -195,14 +209,28 @@ function onMapSelect(selectedPortId: string): void {
 
         <el-col :lg="12" :md="24">
           <el-card shadow="never" class="detail-card">
-            <template #header><span class="card-title">近日流水</span></template>
+            <template #header>
+              <span class="card-title">近日流水</span>
+              <el-button text type="primary" style="float: right" @click="router.push('/reconcile')">导入台账</el-button>
+            </template>
             <el-table :data="recentCalls" size="small" border empty-text="暂无进出港流水">
               <el-table-column prop="vesselName" label="船名" min-width="120" />
-              <el-table-column prop="type" label="类型" width="80" />
+              <el-table-column label="类型" width="72">
+                <template #default="scope">
+                  <el-tag size="small" :type="scope.row.type === '进港' ? 'primary' : 'success'">{{ scope.row.type }}</el-tag>
+                </template>
+              </el-table-column>
               <el-table-column label="时间" min-width="150">
                 <template #default="scope">{{ formatDateTime(scope.row.time) }}</template>
               </el-table-column>
-              <el-table-column prop="berthNo" label="泊位号" width="90" />
+              <el-table-column prop="berthNo" label="泊位号" width="80" />
+              <el-table-column label="来源" width="72">
+                <template #default="scope">
+                  <el-tag size="small" :type="scope.row.source === '台账' ? 'warning' : 'info'" effect="plain">
+                    {{ scope.row.source ?? '手工' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
               <el-table-column label="卸货 kg" min-width="100">
                 <template #default="scope">{{ formatNumber(scope.row.unloadKg, 0) }}</template>
               </el-table-column>
@@ -210,6 +238,25 @@ function onMapSelect(selectedPortId: string): void {
           </el-card>
         </el-col>
       </el-row>
+
+      <el-card v-if="portTodos.length" shadow="never" class="detail-card todo-card" data-testid="port-todos">
+        <template #header>
+          <span class="card-title">本港待办（{{ portTodos.length }}）</span>
+          <el-button text type="primary" style="float: right" @click="router.push('/todos')">前往处理</el-button>
+        </template>
+        <el-table :data="portTodos" size="small" border>
+          <el-table-column label="类型" width="100">
+            <template #default="scope">
+              <el-tag size="small" :type="scope.row.type === '容量不足' ? 'danger' : 'warning'">{{ scope.row.type }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="title" label="事项" min-width="220" />
+          <el-table-column prop="reason" label="原因" min-width="260" />
+          <el-table-column label="时段" min-width="150">
+            <template #default="scope">{{ formatDateTime(scope.row.startTime) }}</template>
+          </el-table-column>
+        </el-table>
+      </el-card>
     </template>
 
     <EmptyState
@@ -239,7 +286,7 @@ function onMapSelect(selectedPortId: string): void {
             <template v-else>—</template>
           </el-descriptions-item>
           <el-descriptions-item label="靠泊时间">{{ formatDateTime(activeBerth.berthAt) }}</el-descriptions-item>
-          <el-descriptions-item label="离泊时间">{{ formatDateTime(activeBerth.leaveAt) }}</el-descriptions-item>
+          <el-descriptions-item label="计划离泊">{{ formatDateTime(activeBerth.leaveAt) }}</el-descriptions-item>
           <el-descriptions-item label="主机功率">
             {{ activeVessel ? `${formatNumber(activeVessel.enginePower, 0)} kW` : '—' }}
           </el-descriptions-item>

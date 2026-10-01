@@ -135,6 +135,12 @@ watch(vesselId, bootstrap);
             <div class="timeline-row">
               <el-tag size="small" :type="call.type === '进港' ? 'primary' : 'success'">{{ call.type }}</el-tag>
               <span>泊位 {{ call.berthNo }}</span>
+              <el-tag size="small" :type="call.source === '台账' ? 'warning' : 'info'" effect="plain">
+                {{ call.source ?? '手工' }}
+              </el-tag>
+              <span v-if="call.type === '进港' && call.endTime">
+                停靠至 {{ formatDateTime(call.endTime) }}
+              </span>
               <span>加冰 {{ formatNumber(call.iceKg, 0) }} kg</span>
               <span>加油 {{ formatNumber(call.fuelL, 0) }} L</span>
               <span>卸货 {{ formatNumber(call.unloadKg, 0) }} kg</span>
